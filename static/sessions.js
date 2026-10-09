@@ -4859,7 +4859,7 @@ function _knownPanelNames(){
     }
   }catch(_e){/* fall through to the static set */}
   if(!names.size){
-    ['chat','tasks','kanban','skills','memory','workspaces','profiles','todos','insights','logs','settings','plugin']
+    ['chat','tasks','kanban','skills','memory','workspaces','profiles','todos','insights','logs','fullconfig','settings','plugin']
       .forEach((n)=>names.add(n));
   }
   return names;
