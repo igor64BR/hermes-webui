@@ -15652,6 +15652,10 @@ def handle_get(handler, parsed) -> bool:
         from api import full_config as _full_config
         return _full_config.handle_env(handler)
 
+    if parsed.path == "/api/full-config/memory-providers":
+        from api import memory_providers as _memory_providers
+        return _memory_providers.handle_list(handler)
+
     # ── Profile API (GET) ──
     if parsed.path == "/api/profiles":
         from api import profiles as profiles_api
@@ -17846,6 +17850,12 @@ def handle_post(handler, parsed) -> bool:
             "/api/full-config/env/set": _full_config.handle_env_set,
             "/api/full-config/env/unset": _full_config.handle_env_unset,
         }
+        if parsed.path.startswith("/api/full-config/memory-providers/"):
+            from api import memory_providers as _memory_providers
+            _full_config_routes = {
+                "/api/full-config/memory-providers/set": _memory_providers.handle_set,
+                "/api/full-config/memory-providers/activate": _memory_providers.handle_activate,
+            }
         _full_config_handler = _full_config_routes.get(parsed.path)
         if _full_config_handler is not None:
             # These writes reach .env and every config.yaml key (MCP/terminal
