@@ -6795,6 +6795,17 @@ _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE = (
 )
 
 
+_PROVIDER_OAUTH_GATE_DENIED_MESSAGE = (
+    "Provider sign-in is only available from local networks when auth is not enabled. "
+    "To bypass this on a remote server, set HERMES_WEBUI_ONBOARDING_OPEN=1."
+)
+_PROVIDER_OAUTH_POST_PATHS = frozenset({
+    "/api/providers/oauth/start",
+    "/api/providers/oauth/cancel",
+    "/api/providers/oauth/logout",
+})
+
+
 _FULL_CONFIG_GATE_DENIED_MESSAGE = (
     "Configuration editing is only available from local networks when auth is not enabled. "
     "To bypass this on a remote server, set HERMES_WEBUI_ONBOARDING_OPEN=1."
@@ -15478,6 +15489,23 @@ def handle_get(handler, parsed) -> bool:
             return j(handler, {"error": "not found"}, status=404)
         return _handle_clarify_inject(handler, parsed)
 
+    if parsed.path == "/api/providers/oauth/poll":
+        # Providers-panel alias of the onboarding poll; unlike it, gated like
+        # the other provider OAuth routes because the panel outlives onboarding.
+        if not _onboarding_gate_allows(handler):
+            return bad(handler, _PROVIDER_OAUTH_GATE_DENIED_MESSAGE, 403)
+        qs = parse_qs(parsed.query)
+        try:
+            return j(
+                handler,
+                poll_onboarding_oauth_flow(qs.get("flow_id", [""])[0]),
+                extra_headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as e:
+            return bad(handler, str(e))
+        except KeyError as e:
+            return bad(handler, str(e), 404)
+
     if parsed.path == "/api/onboarding/oauth/poll":
         qs = parse_qs(parsed.query)
         flow_id = qs.get("flow_id", [""])[0]
@@ -18150,6 +18178,28 @@ def handle_post(handler, parsed) -> bool:
         handler.end_headers()
         handler.wfile.write(response_body)
         return True
+
+    if parsed.path in _PROVIDER_OAUTH_POST_PATHS:
+        # Providers-panel sign-in/sign-out. Same gate as onboarding OAuth; CSRF
+        # is enforced for every POST above. Responses never carry tokens.
+        if not _onboarding_gate_allows(handler):
+            return bad(handler, _PROVIDER_OAUTH_GATE_DENIED_MESSAGE, 403)
+        try:
+            if parsed.path == "/api/providers/oauth/start":
+                result = start_onboarding_oauth_flow(body)
+            elif parsed.path == "/api/providers/oauth/cancel":
+                result = cancel_onboarding_oauth_flow(body)
+            else:
+                from api.providers import logout_provider_oauth
+
+                result = logout_provider_oauth(str((body or {}).get("provider") or ""))
+        except ValueError as e:
+            return bad(handler, str(e))
+        except RuntimeError as e:
+            return bad(handler, str(e), 500)
+        if result.get("ok") is False:
+            return bad(handler, str(result.get("error") or "Provider sign-out failed"), int(result.get("status") or 400))
+        return j(handler, result, extra_headers={"Cache-Control": "no-store"})
 
     if parsed.path == "/api/onboarding/oauth/start":
         if not _onboarding_gate_allows(handler):

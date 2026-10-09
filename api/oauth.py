@@ -770,8 +770,8 @@ def start_onboarding_oauth_flow(body: dict[str, Any] | None) -> dict[str, Any]:
     if provider not in _ALLOWED_ONBOARDING_OAUTH_PROVIDERS:
         if provider in _REJECTED_ONBOARDING_OAUTH_PROVIDERS or provider:
             raise ValueError(
-                "Only OpenAI Codex and Anthropic/Claude OAuth are supported "
-                "in WebUI onboarding right now"
+                "Only OpenAI Codex and Anthropic/Claude OAuth sign-in are supported "
+                "in the WebUI right now; use `hermes auth` in a terminal for this provider"
             )
         raise ValueError("provider is required")
 

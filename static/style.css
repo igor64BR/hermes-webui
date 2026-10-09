@@ -5490,6 +5490,15 @@ main.main > #mainPlugin{display:none;}
   background:color-mix(in srgb, var(--error) 10%, transparent);
 }
 
+.provider-oauth{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+.provider-oauth-actions{flex-wrap:wrap;}
+.provider-oauth-flow{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);}
+.provider-oauth-flow[hidden],.provider-oauth[hidden]{display:none;}
+.provider-oauth-link{font-size:12px;color:var(--accent);word-break:break-all;}
+.provider-oauth-code{font-size:16px;letter-spacing:.1em;padding:4px 10px;border-radius:6px;background:var(--hover-bg);user-select:all;}
+.provider-oauth-wait{align-items:center;justify-content:space-between;flex-wrap:wrap;}
+.provider-oauth-error{color:var(--error);}
+
 
 /* ── Plugin visibility cards ── */
 #pluginsList{gap:12px;}
