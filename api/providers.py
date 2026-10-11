@@ -2250,6 +2250,121 @@ def _provider_is_oauth(provider_id: str) -> bool:
     return provider_id in _OAUTH_PROVIDERS
 
 
+def _provider_oauth_login_supported(provider_id: str) -> bool:
+    """True when the WebUI can run this provider's sign-in flow in-app (api/oauth.py)."""
+    try:
+        from api.oauth import _ALLOWED_ONBOARDING_OAUTH_PROVIDERS
+    except Exception:
+        return False
+    return provider_id in _ALLOWED_ONBOARDING_OAUTH_PROVIDERS
+
+
+_OAUTH_LOGOUT_EXTRA_PROVIDERS = frozenset({"anthropic"})
+
+
+def _clear_anthropic_oauth_credentials() -> bool:
+    """Remove only Anthropic OAuth state from the scoped profile auth store.
+
+    ``clear_provider_auth("anthropic")`` would drop the whole Anthropic
+    credential pool, including API keys added with ``hermes auth add``. Sign-out
+    from the panel removes OAuth only: the ``providers.anthropic`` OAuth state
+    and pool entries whose auth type is OAuth (``sk-ant-oat`` tokens and the
+    Claude Code link marker), using the agent's own store lock and
+    auth-type inference. The caller must hold the profile home scope.
+    """
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, _normalize_pool_auth_type
+    except Exception:
+        AUTH_TYPE_OAUTH = "oauth"
+
+        def _normalize_pool_auth_type(_provider, _token, auth_type):
+            return str(auth_type or "api_key")
+
+    def _is_oauth(entry) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        return _normalize_pool_auth_type(
+            "anthropic", entry.get("access_token"), entry.get("auth_type")
+        ) == AUTH_TYPE_OAUTH
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        cleared = False
+        providers_section = store.get("providers")
+        if isinstance(providers_section, dict) and "anthropic" in providers_section:
+            del providers_section["anthropic"]
+            cleared = True
+        pool = store.get("credential_pool")
+        entries = pool.get("anthropic") if isinstance(pool, dict) else None
+        if isinstance(entries, list):
+            kept = [e for e in entries if not _is_oauth(e)]
+            if len(kept) != len(entries):
+                cleared = True
+                if kept:
+                    pool["anthropic"] = kept
+                else:
+                    del pool["anthropic"]
+        if store.get("active_provider") == "anthropic":
+            store["active_provider"] = None
+            cleared = True
+        if cleared:
+            _save_auth_store(store)
+        return cleared
+
+
+def logout_provider_oauth(provider_id: str) -> dict[str, Any]:
+    """Remove one provider's OAuth credentials from the active profile's auth.json.
+
+    Delegates to the agent's ``clear_provider_auth`` (what ``hermes auth logout``
+    uses) under a context-local Hermes-home override so the write lands in the
+    request profile, never another one. Only the target provider's ``providers``
+    and ``credential_pool`` sections are removed. Never returns credential data.
+    """
+    pid = str(provider_id or "").strip().lower()
+    if pid in {"claude", "claude-code"}:
+        pid = "anthropic"
+    if not pid:
+        raise ValueError("provider is required")
+    if not (_provider_is_oauth(pid) or pid in _OAUTH_LOGOUT_EXTRA_PROVIDERS):
+        raise ValueError(f"'{pid}' is not an OAuth provider")
+    try:
+        from hermes_cli.auth import clear_provider_auth
+    except Exception:
+        return {"ok": False, "status": 409,
+                "error": "This Hermes Agent does not expose provider sign-out; run `hermes auth logout` instead."}
+    from api.full_config import FullConfigError, _active_home_scope
+
+    try:
+        with _active_home_scope():
+            if pid == "anthropic":
+                cleared = _clear_anthropic_oauth_credentials()
+            else:
+                cleared = bool(clear_provider_auth(pid))
+            if pid == "nous":
+                # Match `hermes auth logout`: a profile logout must not be
+                # re-adopted from the cross-profile Nous store on next boot.
+                try:
+                    from hermes_cli.auth_nous import _clear_shared_nous_state
+
+                    _clear_shared_nous_state("logout")
+                except Exception:
+                    logger.debug("Shared Nous state clear skipped", exc_info=True)
+    except FullConfigError as exc:
+        return {"ok": False, "status": exc.status, "error": str(exc)}
+    except Exception as exc:
+        logger.warning("Provider sign-out failed for %s: %s", pid, type(exc).__name__)
+        return {"ok": False, "status": 500, "error": "Provider sign-out failed. Check server logs."}
+    try:
+        from api.oauth import _invalidate_provider_state_caches
+
+        _invalidate_provider_state_caches(pid)
+    except Exception:
+        invalidate_providers_cache()
+    return {"ok": True, "provider": pid, "cleared": cleared}
+
+
 # ── OpenRouter cost-history snapshot helpers (#692) ──────────────────────────
 
 _COST_SNAPSHOTS_DIR_NAME = "cost-snapshots"
@@ -2806,6 +2921,7 @@ def get_providers() -> dict[str, Any]:
             "base_url": provider_base_url,
             "is_plugin_provider": _is_plugin,
             "is_oauth": is_oauth,
+            "oauth_login_supported": is_oauth and _provider_oauth_login_supported(pid),
             "key_source": key_source,
             "auth_error": auth_error,
             "models": models,

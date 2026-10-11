@@ -11578,6 +11578,191 @@ function _attachBudgetControls(wrap,history,card,paceNum){
   });
 }
 
+// In-card OAuth sign-in / sign-out for is_oauth providers. The flow runs
+// through /api/providers/oauth/* (aliases of the onboarding OAuth flow that
+// keep working after onboarding). Responses only carry flow metadata
+// (flow_id, user_code, verification_uri, status) — never tokens.
+function _buildProviderOAuthControls(p,card){
+  const wrap=document.createElement('div');
+  wrap.className='provider-oauth';
+  const actions=document.createElement('div');
+  actions.className='provider-card-row provider-oauth-actions';
+  const flow=document.createElement('div');
+  flow.className='provider-oauth-flow';
+  flow.hidden=true;
+  wrap.appendChild(actions);
+  wrap.appendChild(flow);
+
+  const fromConfigYaml=p.key_source==='config_yaml';
+  // Sign out only removes OAuth credentials; env/token/api-key sources stay untouched.
+  const signedIn=!!p.has_key&&p.key_source==='oauth';
+  const state={flowId:null,timer:null};
+  const buttons=[];
+  const mkBtn=(cls,label,onClick)=>{
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='provider-card-btn '+cls;
+    btn.textContent=label;
+    btn.addEventListener('click',onClick);
+    actions.appendChild(btn);
+    buttons.push(btn);
+    return btn;
+  };
+  const setBusy=(busy)=>{for(const b of buttons) b.disabled=busy;};
+  const stopPolling=()=>{if(state.timer){clearTimeout(state.timer);state.timer=null;}};
+  const showMessage=(text,isError)=>{
+    flow.hidden=false;
+    flow.innerHTML='';
+    const msg=document.createElement('div');
+    msg.className='provider-card-hint'+(isError?' provider-oauth-error':'');
+    msg.textContent=text;
+    flow.appendChild(msg);
+  };
+  const finish=async(status,error)=>{
+    stopPolling();
+    state.flowId=null;
+    setBusy(false);
+    if(status==='success'){
+      showToast(t('providers_oauth_signed_in')||'Signed in');
+      _refreshModelDropdownsAfterProviderChange();
+      await loadProvidersPanel();
+      return;
+    }
+    if(status==='expired') showMessage(t('providers_oauth_expired')||'The sign-in code expired. Try again.',true);
+    else if(status==='cancelled') showMessage(t('providers_oauth_cancelled')||'Sign-in cancelled.',false);
+    else showMessage(error||t('providers_oauth_failed')||'Sign-in failed. Try again.',true);
+  };
+  const cancelFlow=async()=>{
+    const flowId=state.flowId;
+    stopPolling();
+    state.flowId=null;
+    if(flowId){
+      try{await api('/api/providers/oauth/cancel',{method:'POST',body:JSON.stringify({flow_id:flowId,provider:p.id})});}catch(_e){}
+    }
+    await finish('cancelled');
+  };
+  const poll=async()=>{
+    const flowId=state.flowId;
+    if(!flowId) return;
+    if(!card.isConnected){cancelFlow();return;}
+    try{
+      const resp=await api('/api/providers/oauth/poll?flow_id='+encodeURIComponent(flowId));
+      if(state.flowId!==flowId) return;
+      const status=(resp&&resp.status)||'error';
+      if(status==='pending'){state.timer=setTimeout(poll,3000);return;}
+      await finish(status,resp&&resp.error);
+    }catch(e){
+      if(state.flowId===flowId) await finish('error',(e&&e.message)||String(e));
+    }
+  };
+  const renderPending=(resp)=>{
+    flow.hidden=false;
+    flow.innerHTML='';
+    if(resp.verification_uri&&resp.user_code){
+      const step1=document.createElement('div');
+      step1.className='provider-card-hint';
+      step1.textContent=t('providers_oauth_step_open')||'1. Open this link and sign in:';
+      const link=document.createElement('a');
+      link.className='provider-oauth-link';
+      link.target='_blank';
+      link.rel='noopener noreferrer';
+      const uri=String(resp.verification_uri);
+      if(/^https:\/\//i.test(uri)) link.href=uri;
+      link.textContent=uri;
+      const step2=document.createElement('div');
+      step2.className='provider-card-hint';
+      step2.textContent=t('providers_oauth_step_code')||'2. Enter this code:';
+      const codeRow=document.createElement('div');
+      codeRow.className='provider-card-row';
+      const code=document.createElement('code');
+      code.className='provider-oauth-code';
+      code.textContent=String(resp.user_code);
+      const copyBtn=document.createElement('button');
+      copyBtn.type='button';
+      copyBtn.className='provider-card-btn provider-card-btn-ghost';
+      copyBtn.textContent=t('providers_oauth_copy_code')||'Copy code';
+      copyBtn.addEventListener('click',async()=>{
+        try{await navigator.clipboard.writeText(String(resp.user_code));showToast(t('providers_oauth_code_copied')||'Code copied');}
+        catch(_e){showToast(String(resp.user_code));}
+      });
+      codeRow.appendChild(code);
+      codeRow.appendChild(copyBtn);
+      flow.appendChild(step1);
+      flow.appendChild(link);
+      flow.appendChild(step2);
+      flow.appendChild(codeRow);
+    }else if(resp.action_required){
+      const note=document.createElement('div');
+      note.className='provider-card-hint';
+      note.textContent=String(resp.action_required);
+      flow.appendChild(note);
+    }
+    const waitRow=document.createElement('div');
+    waitRow.className='provider-card-row provider-oauth-wait';
+    const waiting=document.createElement('span');
+    waiting.className='provider-card-hint';
+    waiting.textContent=t('providers_oauth_waiting')||'Waiting for authorization…';
+    const cancelBtn=document.createElement('button');
+    cancelBtn.type='button';
+    cancelBtn.className='provider-card-btn provider-card-btn-ghost';
+    cancelBtn.textContent=t('cancel')||'Cancel';
+    cancelBtn.addEventListener('click',cancelFlow);
+    waitRow.appendChild(waiting);
+    waitRow.appendChild(cancelBtn);
+    flow.appendChild(waitRow);
+  };
+  const startFlow=async()=>{
+    stopPolling();
+    state.flowId=null;
+    setBusy(true);
+    showMessage(t('providers_oauth_starting')||'Starting sign-in…',false);
+    try{
+      const resp=await api('/api/providers/oauth/start',{method:'POST',body:JSON.stringify({provider:p.id})});
+      if(!resp||resp.error||!resp.flow_id) throw new Error((resp&&resp.error)||'Invalid OAuth response');
+      if(resp.status&&resp.status!=='pending'){await finish(resp.status,resp.error);return;}
+      state.flowId=resp.flow_id;
+      renderPending(resp);
+      state.timer=setTimeout(poll,Math.max(1000,Number(resp.poll_interval_seconds||3)*1000));
+    }catch(e){
+      await finish('error',(e&&e.message)||String(e));
+    }
+  };
+  const signOut=async()=>{
+    const ok=await showConfirmDialog({
+      title:t('providers_oauth_sign_out_confirm_title')||'Sign out?',
+      message:(t('providers_oauth_sign_out_confirm_message')||'Remove the saved {provider} credentials from this profile?').replace('{provider}',p.display_name||p.id),
+      confirmLabel:t('providers_oauth_sign_out')||'Sign out',
+      danger:true,
+      focusCancel:true,
+    });
+    if(!ok) return;
+    setBusy(true);
+    try{
+      const res=await api('/api/providers/oauth/logout',{method:'POST',body:JSON.stringify({provider:p.id})});
+      if(res&&res.ok===false) throw new Error(res.error||'Sign-out failed');
+      if(res&&res.cleared===false){
+        setBusy(false);
+        showMessage(t('providers_oauth_nothing_to_remove')||'Nothing to remove: no OAuth credentials saved in this profile. The credential may come from outside Hermes.',false);
+        return;
+      }
+      showToast(t('providers_oauth_signed_out')||'Signed out');
+      _refreshModelDropdownsAfterProviderChange();
+      await loadProvidersPanel();
+    }catch(e){
+      setBusy(false);
+      showMessage((e&&e.message)||String(e),true);
+    }
+  };
+
+  if(p.oauth_login_supported){
+    if(signedIn||fromConfigYaml) mkBtn('provider-card-btn-ghost',t('providers_oauth_reauth')||'Re-authenticate',startFlow);
+    else mkBtn('provider-card-btn-primary',t('providers_oauth_sign_in')||'Sign in',startFlow);
+  }
+  if(signedIn) mkBtn('provider-card-btn-danger',t('providers_oauth_sign_out')||'Sign out',signOut);
+  if(!buttons.length) wrap.hidden=true;
+  return wrap;
+}
+
 function _buildProviderCard(p){
   const card=document.createElement('div');
   card.className='provider-card';
@@ -11630,10 +11815,13 @@ function _buildProviderCard(p){
     } else if(p.has_key){
       hint.textContent=t('providers_oauth_hint');
     } else {
-      hint.textContent=t('providers_oauth_not_configured_hint')||'Not authenticated. Run hermes auth in the terminal to configure this provider.';
+      hint.textContent=p.oauth_login_supported
+        ? (t('providers_oauth_sign_in_hint')||'Not authenticated. Sign in to use this provider.')
+        : (t('providers_oauth_not_configured_hint')||'Not authenticated. Run hermes auth in the terminal to configure this provider.');
       hint.style.color='var(--muted)';
     }
     body.appendChild(hint);
+    body.appendChild(_buildProviderOAuthControls(p,card));
     card.appendChild(body);
     header.addEventListener('click',()=>card.classList.toggle('open'));
     return card;
