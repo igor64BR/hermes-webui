@@ -1,5 +1,15 @@
 # Hermes Web UI
 
+> **Fork by [@igor64BR](https://github.com/igor64BR)**: adds a **Config** panel that lets you edit *every* Hermes setting from the browser (all `config.yaml` keys, plus `.env` variables with secrets masked). Changes are written key-by-key through Hermes' own config API, so your file and its comments are preserved.
+>
+> **Plug-n-play with your local Hermes:**
+> ```bash
+> git clone --depth 1 https://github.com/igor64BR/hermes-webui.git
+> cd hermes-webui && ./start.sh
+> # open http://localhost:8787  →  sidebar "Config" icon
+> ```
+> It auto-detects `~/.hermes` and `~/.hermes/hermes-agent`; no extra configuration needed. Multiple conversations can run in parallel; switch between them freely.
+
 [Hermes Agent](https://hermes-agent.nousresearch.com/) is a sophisticated autonomous agent that lives on your server, accessed via a terminal or messaging apps, that remembers what it learns and gets more capable the longer it runs.
 
 Hermes WebUI is a lightweight, dark-themed web app interface in your browser for [Hermes Agent](https://hermes-agent.nousresearch.com/).

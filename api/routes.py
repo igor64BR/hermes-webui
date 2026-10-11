@@ -6795,6 +6795,12 @@ _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE = (
 )
 
 
+_FULL_CONFIG_GATE_DENIED_MESSAGE = (
+    "Configuration editing is only available from local networks when auth is not enabled. "
+    "To bypass this on a remote server, set HERMES_WEBUI_ONBOARDING_OPEN=1."
+)
+
+
 def _embedded_terminal_gate_allows(handler) -> bool:
     """Local-origin gate for the embedded-terminal endpoints.
 
@@ -15637,6 +15643,15 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/memory":
         return _handle_memory_read(handler, parsed)
 
+    # ── Full Hermes configuration (GET) ──
+    if parsed.path == "/api/full-config/schema":
+        from api import full_config as _full_config
+        return _full_config.handle_schema(handler)
+
+    if parsed.path == "/api/full-config/env":
+        from api import full_config as _full_config
+        return _full_config.handle_env(handler)
+
     # ── Profile API (GET) ──
     if parsed.path == "/api/profiles":
         from api import profiles as profiles_api
@@ -17821,6 +17836,24 @@ def handle_post(handler, parsed) -> bool:
     # ── Memory (POST) ──
     if parsed.path == "/api/memory/write":
         return _handle_memory_write(handler, body)
+
+    # ── Full Hermes configuration (POST) ──
+    if parsed.path.startswith("/api/full-config/"):
+        from api import full_config as _full_config
+        _full_config_routes = {
+            "/api/full-config/set": _full_config.handle_set,
+            "/api/full-config/reset": _full_config.handle_reset,
+            "/api/full-config/env/set": _full_config.handle_env_set,
+            "/api/full-config/env/unset": _full_config.handle_env_unset,
+        }
+        _full_config_handler = _full_config_routes.get(parsed.path)
+        if _full_config_handler is not None:
+            # These writes reach .env and every config.yaml key (MCP/terminal
+            # commands included): same local-origin gate as onboarding when
+            # auth is disabled.
+            if not _onboarding_gate_allows(handler):
+                return bad(handler, _FULL_CONFIG_GATE_DENIED_MESSAGE, 403)
+            return _full_config_handler(handler, body)
 
     if parsed.path in {"/api/gateway/start", "/api/gateway/stop", "/api/gateway/restart"}:
         return _handle_gateway_lifecycle(handler, parsed.path.rsplit("/", 1)[-1], body)
