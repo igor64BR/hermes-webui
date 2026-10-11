@@ -7449,6 +7449,17 @@ main.main.showing-fullconfig > #mainFullconfig{display:flex;}
 .fc-switch input:disabled + .fc-switch-track{opacity:.5;}
 .fc-env-add{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;border:1px dashed var(--border);border-radius:8px;}
 .fc-env-name{flex:0 1 220px;font-family:var(--font-mono);}
+.fc-mp-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:6px;scroll-margin-top:8px;}
+.fc-mp-card.is-active{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent);}
+.fc-mp-card.saving{opacity:.6;}
+.fc-mp-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.fc-mp-name{font-weight:600;font-size:13px;font-family:var(--font-mono);}
+.fc-mp-activate{margin-left:auto;}
+.fc-mp-fields{display:flex;flex-direction:column;margin:0 -12px;}
+.fc-mp-fields > .fc-empty{padding:4px 12px;}
+.fc-mp-select{flex:0 1 240px;}
+.fc-mp-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.fc-badge-warn{border-color:var(--warning);color:var(--warning);}
 @media (max-width:640px){
   .fc-body{padding:10px;}
   .fc-row-edit{flex-direction:column;align-items:stretch;}

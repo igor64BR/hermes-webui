@@ -1,18 +1,24 @@
 // ── Full Hermes configuration panel ("Config") ──
-// Every DEFAULT_CONFIG key of the active profile's config.yaml plus every known
-// .env variable. Edits are saved one key at a time through /api/full-config/*;
-// the server writes only the touched key and never returns secrets in clear.
+// Every DEFAULT_CONFIG key of the active profile's config.yaml, every known
+// .env variable and every memory provider plugin's settings. Edits are saved
+// through /api/full-config/*; the server writes only the touched keys and never
+// returns secrets in clear.
 
 const _fc = {
-  tab: 'config',          // 'config' | 'env'
+  tab: 'config',          // 'config' | 'env' | 'memory'
   filter: 'all',          // 'all' | 'changed'
   query: '',
   schema: null,
   env: null,
+  memory: null,           // /api/full-config/memory-providers payload
   open: new Set(),        // expanded section names (config) / categories (env)
-  loading: {config: false, env: false},
-  loadedFor: {config: null, env: null},  // client profile token each cache was fetched under
+  loading: {config: false, env: false, memory: false},
+  loadedFor: {config: null, env: null, memory: null},  // client profile token each cache was fetched under
 };
+
+// Payload field and endpoint per tab.
+const _FC_DATA = {config: 'schema', env: 'env', memory: 'memory'};
+const _FC_URLS = {config: '/api/full-config/schema', env: '/api/full-config/env', memory: '/api/full-config/memory-providers'};
 
 // Browser-side identity of the active profile; caches are only valid for it.
 function _fcProfileToken(){
@@ -22,7 +28,7 @@ function _fcProfileToken(){
 // Server-side profile name echoed by the payload the user is editing; sent with
 // every write so the server refuses edits prepared against another profile.
 function _fcServerProfile(tab){
-  const data = (tab || _fc.tab) === 'config' ? _fc.schema : _fc.env;
+  const data = _fc[_FC_DATA[tab || _fc.tab]];
   return data && data.profile ? data.profile : undefined;
 }
 
@@ -30,7 +36,8 @@ function _fcServerProfile(tab){
 function fullConfigInvalidate(){
   _fc.schema = null;
   _fc.env = null;
-  _fc.loadedFor = {config: null, env: null};
+  _fc.memory = null;
+  _fc.loadedFor = {config: null, env: null, memory: null};
   if (typeof _currentPanel !== 'undefined' && _currentPanel === 'fullconfig') loadFullConfig(true);
 }
 
@@ -40,7 +47,7 @@ function _fcSectionLabel(name){ return name ? name : t('fc_general_section'); }
 
 async function loadFullConfig(force){
   const tab = _fc.tab;
-  const field = tab === 'config' ? 'schema' : 'env';
+  const field = _FC_DATA[tab];
   const profile = _fcProfileToken();
   if (_fc.loadedFor[tab] !== profile) _fc[field] = null;  // profile switched since fetch
   if (!force && _fc[field]) { _fcRender(); return; }
@@ -50,7 +57,7 @@ async function loadFullConfig(force){
   _fc.loading[tab] = true;
   let data = null, error = null;
   try {
-    data = await api(tab === 'config' ? '/api/full-config/schema' : '/api/full-config/env');
+    data = await api(_FC_URLS[tab]);
   } catch (e) {
     error = e;
   } finally {
@@ -77,7 +84,7 @@ function _fcHandleWriteError(e){
 }
 
 function fullConfigSetTab(tab){
-  _fc.tab = tab === 'env' ? 'env' : 'config';
+  _fc.tab = _FC_DATA[tab] ? tab : 'config';
   document.querySelectorAll('.fc-tab').forEach(b => {
     const active = b.dataset.fcTab === _fc.tab;
     b.classList.toggle('active', active);
@@ -98,6 +105,7 @@ function fullConfigSearch(value){
 }
 
 function fullConfigToggleAll(open){
+  if (_fc.tab === 'memory') return;  // provider cards are always expanded
   const groups = _fc.tab === 'config'
     ? ((_fc.schema && _fc.schema.sections) || []).map(s => s.name)
     : ((_fc.env && _fc.env.categories) || []).map(c => 'env:' + c.name);
@@ -123,6 +131,7 @@ function _fcRender(){
   const nav = _fcEl('fullConfigSections');
   if (!body) return;
   if (_fc.tab === 'config') _fcRenderConfig(body, status, nav);
+  else if (_fc.tab === 'memory') _fcRenderMemory(body, status, nav);
   else _fcRenderEnv(body, status, nav);
 }
 
@@ -514,5 +523,196 @@ async function fullConfigEnvAdd(){
   } catch (e) {
     if (_fcHandleWriteError(e)) return;
     show(false, e.message || String(e));
+  }
+}
+
+// ── Memory providers ──
+// One card per provider plugin discovered by the agent; fields come from the
+// provider's get_config_schema(). Non-secret values go to the provider's native
+// config, secrets to .env; only changed fields are sent.
+
+function _fcMatchesProvider(p){
+  if (_fc.filter === 'changed' && !p.active && !p.fields.some(f => f.is_set)) return false;
+  if (!_fc.query) return true;
+  return [p.name, p.description, ...p.fields.map(f => f.key + ' ' + f.description)].join(' ').toLowerCase().includes(_fc.query);
+}
+
+function _fcMemoryStatus(){
+  const m = _fc.memory;
+  return m ? t('fc_mp_summary', m.providers.length, m.active || t('fc_mp_builtin')) : '';
+}
+
+function _fcRenderMemory(body, status, nav){
+  const m = _fc.memory;
+  if (!m) return;
+  if (status) status.textContent = _fcMemoryStatus();
+  const providers = m.providers.filter(_fcMatchesProvider);
+  const locked = !!m.managed;
+  const builtin = `<div class="fc-mp-card fc-mp-builtin${m.active ? '' : ' is-active'}">
+    <div class="fc-mp-head"><span class="fc-mp-name">${esc(t('fc_mp_builtin'))}</span>
+      ${m.active ? '' : `<span class="fc-badge fc-badge-changed">${esc(t('fc_mp_active'))}</span>`}
+      ${m.active && !locked ? `<button type="button" class="fc-btn fc-mp-activate" onclick="fullConfigMemoryActivate('')">${esc(t('fc_mp_use_builtin'))}</button>` : ''}</div>
+    <div class="fc-desc">${esc(t('fc_mp_builtin_desc'))}</div>
+    ${m.active_missing ? `<div class="fc-feedback err">${esc(t('fc_mp_missing_active', m.active))}</div>` : ''}
+  </div>`;
+  body.innerHTML = (locked ? `<div class="fc-banner">${esc(t('fc_managed'))}</div>` : '') + builtin
+    + (providers.map(p => _fcProviderCard(p, locked)).join('') || `<div class="fc-empty">${esc(t('fc_no_results'))}</div>`);
+  if (!nav) return;
+  nav.innerHTML = providers.map(p => `<button type="button" class="fc-nav-item" data-fc-mp-jump="${esc(p.name)}">
+    <span>${esc(p.name)}</span><span class="fc-nav-count">${p.active ? esc(t('fc_mp_active')) : p.fields.length}</span></button>`).join('')
+    || `<div class="fc-empty">${esc(t('fc_no_results'))}</div>`;
+  nav.querySelectorAll('[data-fc-mp-jump]').forEach(btn => btn.addEventListener('click', () => {
+    const el = _fcProviderEl(btn.dataset.fcMpJump);
+    if (el) el.scrollIntoView({block: 'start', behavior: 'smooth'});
+    if (typeof _isDesktopWidth === 'function' && !_isDesktopWidth() && typeof closeMobileSidebar === 'function') closeMobileSidebar();
+  }));
+}
+
+function _fcProviderEl(name){
+  return Array.from(document.querySelectorAll('#fullConfigBody [data-fc-mp]')).find(el => el.dataset.fcMp === name) || null;
+}
+
+function _fcProviderCard(p, locked){
+  const badges = [
+    p.active ? `<span class="fc-badge fc-badge-changed">${esc(t('fc_mp_active'))}</span>` : '',
+    !p.loaded ? `<span class="fc-badge fc-badge-warn">${esc(t('fc_mp_not_loaded'))}</span>`
+      : (!p.available ? `<span class="fc-badge fc-badge-warn">${esc(t('fc_mp_unavailable'))}</span>` : ''),
+  ].join('');
+  const action = locked || p.active || !p.loaded ? ''
+    : `<button type="button" class="fc-btn fc-mp-activate" onclick="fullConfigMemoryActivate(this.closest('[data-fc-mp]').dataset.fcMp)">${esc(t('fc_mp_activate'))}</button>`;
+  const fields = p.fields.map(f => _fcProviderField(f, locked)).join('');
+  return `<section class="fc-mp-card${p.active ? ' is-active' : ''}" data-fc-mp="${esc(p.name)}">
+    <div class="fc-mp-head"><span class="fc-mp-name">${esc(p.name)}</span>${badges}${action}</div>
+    ${p.description ? `<div class="fc-desc">${esc(p.description)}</div>` : ''}
+    <div class="fc-mp-fields">${fields || `<div class="fc-empty">${esc(t('fc_mp_no_fields'))}</div>`}</div>
+    ${fields && !locked ? `<div class="fc-mp-actions">
+      <button type="button" class="fc-btn fc-btn-primary" onclick="fullConfigMemorySave(this.closest('[data-fc-mp]').dataset.fcMp)">${esc(t('fc_save'))}</button>
+      <div class="fc-feedback" aria-live="polite"></div></div>` : ''}
+  </section>`;
+}
+
+function _fcProviderInput(f, locked){
+  const key = esc(f.key);
+  const disabled = locked || !f.editable ? ' disabled' : '';
+  if (f.kind === 'secret') {
+    const placeholder = f.is_set ? `${f.masked} — ${t('fc_mp_unchanged')}` : t('fc_env_value');
+    return `<input class="fc-input" type="password" data-fc-mp-input="${key}" autocomplete="new-password" data-1p-ignore data-lpignore="true"
+      placeholder="${esc(placeholder)}"${disabled}>`;
+  }
+  if (f.kind === 'boolean') {
+    return `<label class="fc-switch"><input type="checkbox" data-fc-mp-input="${key}"${f.value ? ' checked' : ''}${disabled}><span class="fc-switch-track"></span></label>`;
+  }
+  if (f.kind === 'select') {
+    const current = String(f.value ?? '');
+    const opts = (f.choices.includes(current) ? [] : [current]).concat(f.choices);
+    return `<select class="fc-input fc-mp-select" data-fc-mp-input="${key}"${disabled}>${opts.map(c =>
+      `<option value="${esc(c)}"${c === current ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
+  }
+  if (f.kind === 'integer' || f.kind === 'number') {
+    const attr = (name, v) => (v === null || v === undefined ? '' : ` ${name}="${esc(String(v))}"`);
+    const step = f.step ?? (f.kind === 'integer' ? 1 : 'any');
+    return `<input class="fc-input fc-input-num" type="number" data-fc-mp-input="${key}" value="${esc(String(f.value ?? ''))}"
+      ${attr('min', f.minimum)}${attr('max', f.maximum)}${attr('step', step)}${disabled}>`;
+  }
+  return `<input class="fc-input" type="text" data-fc-mp-input="${key}" value="${esc(String(f.value ?? ''))}" autocomplete="off" spellcheck="false"${disabled}>`;
+}
+
+function _fcProviderField(f, locked){
+  const badges = [
+    f.is_set ? `<span class="fc-badge fc-badge-changed">${esc(t('fc_env_set_badge'))}</span>` : '',
+    f.required ? `<span class="fc-badge">${esc(t('fc_mp_required'))}</span>` : '',
+    f.kind === 'secret' ? `<span class="fc-badge">${esc(t('fc_secret_badge'))}</span>` : `<span class="fc-badge fc-badge-type">${esc(f.kind)}</span>`,
+  ].join('');
+  const hints = [];
+  if (f.kind === 'secret' && !f.editable) hints.push(t('fc_mp_secret_no_env'));
+  if (f.kind === 'secret' && f.env_var) hints.push(f.env_var);
+  if (f.kind !== 'secret' && f.env_effective) hints.push(t('fc_mp_env_effective', f.env_override_var));
+  else if (f.kind !== 'secret' && f.env_set) hints.push(t('fc_mp_env_override', f.env_override_var || f.env_var));
+  if (f.structured) hints.push(t('fc_mp_structured'));
+  if (f.kind !== 'secret' && f.is_set && f.editable && f.kind !== 'boolean' && f.kind !== 'select') hints.push(t('fc_mp_clear_hint'));
+  const def = f.kind !== 'secret' && f.default !== null && f.default !== undefined && f.default !== '' ? String(f.default) : '';
+  return `<div class="fc-row${f.is_set ? ' is-set' : ''}" data-fc-mp-field="${esc(f.key)}">
+    <div class="fc-row-head"><code class="fc-path">${esc(f.key)}</code>${badges}
+      ${f.url ? `<a class="fc-link" href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(t('fc_env_docs'))} ↗</a>` : ''}</div>
+    ${f.description ? `<div class="fc-desc">${esc(f.description)}</div>` : ''}
+    ${hints.map(h => `<div class="fc-hint">${esc(h)}</div>`).join('')}
+    <div class="fc-row-edit">${_fcProviderInput(f, locked)}</div>
+    ${def ? `<div class="fc-default">${esc(t('fc_default'))}: <code>${esc(def)}</code></div>` : ''}
+  </div>`;
+}
+
+function _fcProviderFeedback(name, ok, msg){
+  const card = _fcProviderEl(name);
+  const fb = card && card.querySelector('.fc-mp-actions .fc-feedback');
+  if (!fb) { if (msg) showToast(msg); return; }
+  fb.textContent = msg;
+  fb.className = 'fc-feedback ' + (ok ? 'ok' : 'err');
+  if (ok) setTimeout(() => { if (fb.textContent === msg) { fb.textContent = ''; fb.className = 'fc-feedback'; } }, 2500);
+}
+
+// Changed fields only, so untouched defaults are never written to the native config.
+// A stored text/number field emptied by the user is sent as null: restore its default.
+function _fcProviderValues(p, card){
+  const values = {};
+  for (const f of p.fields) {
+    const input = Array.from(card.querySelectorAll('[data-fc-mp-input]')).find(el => el.dataset.fcMpInput === f.key);
+    if (!input || input.disabled) continue;
+    if (f.kind === 'secret') { if (input.value) values[f.key] = input.value; continue; }
+    if (f.kind === 'boolean') { if (!!input.checked !== !!f.value) values[f.key] = !!input.checked; continue; }
+    if (f.kind === 'integer' || f.kind === 'number') {
+      const raw = input.value.trim();
+      if (raw === '') { if (f.is_set) values[f.key] = null; continue; }
+      if (raw === String(f.value ?? '')) continue;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || (f.kind === 'integer' && !Number.isInteger(n))) return {error: `${f.key}: ${t('fc_invalid_number')}`};
+      values[f.key] = n;
+      continue;
+    }
+    if (input.value === '' && f.kind === 'text') { if (f.is_set) values[f.key] = null; continue; }
+    if (input.value !== String(f.value ?? '')) values[f.key] = input.value;
+  }
+  return {values};
+}
+
+async function fullConfigMemorySave(name){
+  const p = _fc.memory && _fc.memory.providers.find(x => x.name === name);
+  const card = _fcProviderEl(name);
+  if (!p || !card) return;
+  const {values, error} = _fcProviderValues(p, card);
+  if (error) { _fcProviderFeedback(name, false, error); return; }
+  if (!Object.keys(values).length) { _fcProviderFeedback(name, true, t('fc_mp_no_changes')); return; }
+  card.classList.add('saving');
+  try {
+    const res = await api('/api/full-config/memory-providers/set', {method: 'POST',
+      body: JSON.stringify({provider: name, values, profile: _fcServerProfile('memory')})});
+    const i = _fc.memory.providers.findIndex(x => x.name === name);
+    if (res.provider && i >= 0) {
+      _fc.memory.providers[i] = res.provider;
+      // Replace only this card so unsaved edits in other cards survive.
+      const tmp = document.createElement('div');
+      tmp.innerHTML = _fcProviderCard(res.provider, !!_fc.memory.managed);
+      card.replaceWith(tmp.firstElementChild);
+    } else {
+      _fcRender();
+    }
+    _fcProviderFeedback(name, true, t('fc_saved'));
+  } catch (e) {
+    card.classList.remove('saving');
+    if (_fcHandleWriteError(e)) return;
+    _fcProviderFeedback(name, false, e.message || String(e));
+  }
+}
+
+async function fullConfigMemoryActivate(name){
+  try {
+    const res = await api('/api/full-config/memory-providers/activate', {method: 'POST',
+      body: JSON.stringify({provider: name || 'none', profile: _fcServerProfile('memory')})});
+    _fc.memory = res;
+    _fcRender();
+    showToast(name ? t('fc_mp_activated', name) : t('fc_mp_deactivated'));
+  } catch (e) {
+    if (_fcHandleWriteError(e)) return;
+    if (name) _fcProviderFeedback(name, false, e.message || String(e));
+    else showToast(e.message || String(e));
   }
 }
